@@ -1,0 +1,136 @@
+name: Terraform CI/CD (Simple)
+
+on:
+  pull_request:
+    paths: [ "terraform/**" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [ dev, test, prod ]
+        default: dev
+        required: true
+      action:
+        description: "Run a plan, apply, or destroy?"
+        type: choice
+        options: [ plan, apply, destroy ]
+        default: plan
+        required: true
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: eu-central-1
+      confirm_destroy:
+        description: "Type DESTROY to confirm destructive run"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: 1.8.5
+  TF_DIR: terraform
+  DEFAULT_AWS_REGION: eu-central-1
+
+jobs:
+  terraform:
+    name: Terraform (${{ github.event_name == 'pull_request' && 'dev/plan' || format('{0}/{1}', inputs.environment, inputs.action) }})
+    runs-on: ubuntu-latest
+
+    # Scope secrets by environment: PRs use 'dev', manual uses the selected env
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve config
+        id: cfg
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ENVIRONMENT=dev
+            ACTION=plan
+            AWS_REGION="${DEFAULT_AWS_REGION}"
+          else
+            ENVIRONMENT="${{ inputs.environment }}"
+            ACTION="${{ inputs.action }}"
+            AWS_REGION="${{ inputs.aws_region }}"
+          fi
+
+          VAR_FILE="$ENVIRONMENT/$ENVIRONMENT.tfvars"
+
+          echo "environment=$ENVIRONMENT"   >> $GITHUB_OUTPUT
+          echo "action=$ACTION"             >> $GITHUB_OUTPUT
+          echo "aws_region=$AWS_REGION"     >> $GITHUB_OUTPUT
+          echo "var_file=$VAR_FILE"         >> $GITHUB_OUTPUT
+
+      - name: Safety check (confirm destroy)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'destroy' }}
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "Refusing to destroy: you must type DESTROY in the confirm field."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (Access Key)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }} # optional
+          aws-region:            ${{ steps.cfg.outputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false
+
+      - name: Pick workspace
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform workspace select "${{ steps.cfg.outputs.environment }}" \
+          || terraform workspace new "${{ steps.cfg.outputs.environment }}"
+
+      - name: Format check
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+
+      - name: Plan (normal or destroy)
+        id: plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          if [ "${{ steps.cfg.outputs.action }}" = "destroy" ]; then
+            terraform plan -destroy \
+              -var-file="${{ steps.cfg.outputs.var_file }}" \
+              -out=tfplan.binary \
+              -input=false -no-color
+          else
+            terraform plan \
+              -var-file="${{ steps.cfg.outputs.var_file }}" \
+              -out=tfplan.binary \
+              -input=false -no-color
+          fi
+
+      - name: Save plan artifact (manual runs)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ steps.cfg.outputs.environment }}
+          path: ${{ env.TF_DIR }}/tfplan.binary
+          retention-days: 3
+
+      - name: Apply (manual apply/destroy only)
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.action == 'apply' || inputs.action == 'destroy') }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan.binary
