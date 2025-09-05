@@ -6,14 +6,12 @@ terraform {
   }
 }
 
-# backend.tf
 terraform {
   backend "s3" {
-    bucket               = "infra-terraform2"     # one bucket for all envs
+    bucket               = "infra-terraform2" 
     region               = "eu-central-1"
     key                  = "terraform.tfstate"   # base filename
     workspace_key_prefix = "state"               # gives state/<ws>/terraform.tfstate
-#    dynamodb_table       = "tf-locks"            # enable locking
     encrypt              = true                  
   }
 }
