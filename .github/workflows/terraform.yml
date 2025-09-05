@@ -1,4 +1,4 @@
-name: Terraform CI/CD (Simple)
+name: Terraform CI/CD
 
 on:
   pull_request:
@@ -106,7 +106,7 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: terraform validate
 
-      - name: Plan (normal or destroy)
+      - name: Plan
         id: plan
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -122,7 +122,7 @@ jobs:
               -input=false -no-color
           fi
 
-      - name: Save plan artifact (manual runs)
+      - name: Save plan artifact
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
@@ -130,7 +130,7 @@ jobs:
           path: ${{ env.TF_DIR }}/tfplan.binary
           retention-days: 3
 
-      - name: Apply (manual apply/destroy only)
+      - name: Apply
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.action == 'apply' || inputs.action == 'destroy') }}
         working-directory: ${{ env.TF_DIR }}
         run: terraform apply -input=false -auto-approve tfplan.binary
